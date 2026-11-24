@@ -1,0 +1,694 @@
+{% extends "base-dashboard.html" %}
+
+{% block title %}Заказы на производство{% endblock %}
+{% block content %}
+<script>
+let productsList = [];
+let clientsList = [];
+let isViewingOrder = false;
+
+async function loadProducts() {
+try {
+    const res = await fetch('/api/products/', { credentials: 'include' });
+    const data = await res.json();
+    productsList = data.products || [];
+} catch (e) {
+    productsList = [];
+}
+}
+
+async function loadClients() {
+try {
+    const res = await fetch('/api/clients/', { credentials: 'include' });
+    const data = await res.json();
+    clientsList = data.clients || [];
+} catch (e) {
+    clientsList = [];
+}
+}
+
+async function loadOrders() {
+    try {
+        const response = await fetch('/api/production-orders/', { credentials: 'include' });
+        const data = await response.json();
+        const tbody = document.getElementById('ordersTableBody');
+            
+        if (!data.production_orders || data.production_orders.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="empty-state">Заказов на производство пока нет</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = '';
+        data.production_orders.forEach(order => {
+            const tr = document.createElement('tr');
+            const statusClass = order.status === 'Новый' ? 'status-new' : 
+                               order.status === 'В работе' ? 'status-progress' : 
+                               order.status === 'Завершён' ? 'status-done' : 'status-cancelled';
+            tr.innerHTML = `
+                <td>${order.order_number}</td>
+                <td>${order.order_date ? new Date(order.order_date).toLocaleDateString('ru-RU') : '—'}</td>
+                <td>${order.subdivision || '—'}</td>
+                <td>${order.client_id ? order.client_id.substring(0, 8) + '...' : '—'}</td>
+                <td>${order.total_amount || 0} ₽</td>
+                <td><span class="status-badge ${statusClass}">${order.status}</span></td>
+                <td>
+                    <button class="btn btn-sm btn-outline" onclick="viewOrder('${order.order_id}')">👁️</button>
+                    <button class="btn btn-sm btn-warning" onclick="editOrder('${order.order_id}')">✏️</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteOrder('${order.order_id}')">🗑️</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    } catch (error) {
+        showNotification('error', 'Ошибка', 'Не удалось загрузить данные');
+    }
+}
+
+function openAddOrderModal() {
+    document.getElementById('modalTitle').textContent = 'Добавить заказ на производство';
+    document.getElementById('editOrderId').value = '';
+    document.getElementById('orderForm').reset();
+    document.getElementById('orderDate').valueAsDate = new Date();
+    document.getElementById('status').value = 'Новый';
+    document.getElementById('orderItemsContainer').innerHTML = '';
+    addOrderItemRow();
+    openModal('orderModal');
+}
+
+async function loadProductInfo(productId, rowId) {
+    const product = productsList.find(p => p.product_id === productId);
+    if (product) {
+        document.getElementById(`productName_${rowId}`).value = product.name;
+        document.getElementById(`productCode_${rowId}`).value = product.code;
+    }
+}
+
+function addOrderItemRow() {
+    const container = document.getElementById('orderItemsContainer');
+    const rowId = Date.now();
+    const row = document.createElement('div');
+    row.className = 'order-item-row';
+    row.id = `orderItemRow_${rowId}`;
+    row.innerHTML = `
+        <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 8px; margin-bottom: 8px; align-items: end;">
+            <div class="form-group" style="margin: 0;">
+                <label class="form-label" style="font-size: 12px;">Продукция</label>
+                <select class="form-input" onchange="loadProductInfo(this.value, '${rowId}'); updateItemTotal('${rowId}')">
+                    <option value="">Выберите...</option>
+                    ${productsList.map(p => `<option value="${p.product_id}" data-name="${p.name}" data-code="${p.code}">${p.name} (${p.code})</option>`).join('')}
+                </select>
+            </div>
+            <div class="form-group" style="margin: 0;">
+                <label class="form-label" style="font-size: 12px;">Наименование</label>
+                <input type="text" id="productName_${rowId}" class="form-input" readonly>
+            </div>
+            <div class="form-group" style="margin: 0;">
+                <label class="form-label" style="font-size: 12px;">Код</label>
+                <input type="text" id="productCode_${rowId}" class="form-input" readonly>
+            </div>
+            <div class="form-group" style="margin: 0;">
+                <label class="form-label" style="font-size: 12px;">Количество</label>
+                <input type="number" class="form-input" id="itemQty_${rowId}" value="1" min="1" onchange="updateItemTotal('${rowId}')" oninput="updateItemTotal('${rowId}')">
+            </div>
+            <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.parentElement.remove()">✕</button>
+        </div>
+    `;
+    container.appendChild(row);
+}
+
+function updateItemTotal(rowId) {
+    // Placeholder for future price calculation
+}
+
+async function viewOrder(orderId) {
+    // Prevent duplicate calls
+    if (isViewingOrder) {
+        return;
+    }
+    isViewingOrder = true;
+    
+    try {
+        const response = await fetch(`/api/production-orders/${orderId}`, { credentials: 'include' });
+        const data = await response.json();
+            
+        // API returns { success: true, data: {...} } or directly
+        let order;
+        if (data.success && data.data) {
+            order = data.data;
+        } else {
+            // API returns order directly
+            order = data;
+        }
+            
+        // Проверяем, что order имеет правильную структуру
+        if (!order || !order.order_id) {
+            throw new Error('Заказ не найден');
+        }
+        
+        // Формируем HTML для продукции с детализацией по каждому продукту
+        let productsHtml = '';
+        let productDetailsHtml = '';
+        let totalMaterialCost = 0;
+        let totalOperationCost = 0;
+            
+        if (order.items && order.items.length > 0) {
+            order.items.forEach((item, index) => {
+                const qty = parseFloat(item.quantity) || 0;
+                    
+                // Таблица продукции
+                productsHtml += `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td>${item.product_name || 'Продукция'}</td>
+                        <td>${item.product_code || ''}</td>
+                        <td>${qty}</td>
+                        <td>шт</td>
+                    </tr>
+                `;
+                    
+                // Детализация: материалы для этого продукта
+                let materialsDetailHtml = '';
+                let productMaterialCost = 0;
+                if (item.materials && item.materials.length > 0) {
+                    item.materials.forEach(mat => {
+                        const matTotal = mat.total_price || 0;
+                        productMaterialCost += matTotal;
+                        materialsDetailHtml += `
+                            <tr>
+                                <td style="padding-left: 24px;">● ${mat.material_name}</td>
+                                <td>${mat.material_code}</td>
+                                <td style="text-align: center;">${mat.total_quantity.toFixed(3)}</td>
+                                <td style="text-align: center;">шт</td>
+                                <td style="text-align: right;">${mat.material_price} ₽</td>
+                                <td style="text-align: right;">${matTotal.toFixed(2)} ₽</td>
+                            </tr>
+                        `;
+                    });
+                }
+                    
+                // Детализация: операции для этого продукта
+                let operationsDetailHtml = '';
+                let productOperationCost = 0;
+                if (item.operations && item.operations.length > 0) {
+                    item.operations.forEach(op => {
+                        const opTotal = op.total_price || 0;
+                        productOperationCost += opTotal;
+                        operationsDetailHtml += `
+                            <tr>
+                                <td style="padding-left: 24px;">● ${op.operation_name}</td>
+                                <td>${op.operation_code}</td>
+                                <td style="text-align: center;">${op.total_time.toFixed(2)}</td>
+                                <td style="text-align: center;">ч</td>
+                                <td style="text-align: right;">${op.operation_price} ₽/ч</td>
+                                <td style="text-align: right;">${opTotal.toFixed(2)} ₽</td>
+                            </tr>
+                        `;
+                    });
+                }
+                    
+                totalMaterialCost += productMaterialCost;
+                totalOperationCost += productOperationCost;
+                    
+                // Формируем блок детализации для этого продукта
+                productDetailsHtml += `
+                    <div style="margin-top: 12px; padding: 12px; background: #f8f9fa; border-radius: 6px; border-left: 3px solid var(--color-primary);">
+                        <h5 style="margin: 0 0 8px 0; color: var(--color-primary); font-size: 14px;">
+                            Позиция ${index + 1}: ${item.product_name} (кол-во: ${qty} шт)
+                        </h5>
+                            
+                        ${materialsDetailHtml ? `
+                            <p style="margin: 8px 0 4px 0; font-size: 12px; font-weight: 600; color: #666;">Материалы:</p>
+                            <table style="width: 100%; margin-bottom: 8px; font-size: 12px; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #e9ecef;">
+                                        <th style="padding: 4px 8px; text-align: left;">Наименование</th>
+                                        <th style="padding: 4px 8px; text-align: left;">Код</th>
+                                        <th style="padding: 4px 8px; text-align: center;">Кол-во</th>
+                                        <th style="padding: 4px 8px; text-align: center;">Ед.</th>
+                                        <th style="padding: 4px 8px; text-align: right;">Цена</th>
+                                        <th style="padding: 4px 8px; text-align: right;">Сумма</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${materialsDetailHtml}</tbody>
+                            </table>
+                            <p style="margin: 0; font-size: 11px; text-align: right; color: #666;">Итого материалы: ${productMaterialCost.toFixed(2)} ₽</p>
+                        ` : '<p style="margin: 4px 0; font-size: 12px; color: #999;">Материалы не указаны</p>'}
+                            
+                        ${operationsDetailHtml ? `
+                            <p style="margin: 8px 0 4px 0; font-size: 12px; font-weight: 600; color: #666;">Технологические операции:</p>
+                            <table style="width: 100%; margin-bottom: 8px; font-size: 12px; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="background: #e9ecef;">
+                                        <th style="padding: 4px 8px; text-align: left;">Наименование</th>
+                                        <th style="padding: 4px 8px; text-align: left;">Код</th>
+                                        <th style="padding: 4px 8px; text-align: center;">Время</th>
+                                        <th style="padding: 4px 8px; text-align: center;">Ед.</th>
+                                        <th style="padding: 4px 8px; text-align: right;">Ставка</th>
+                                        <th style="padding: 4px 8px; text-align: right;">Сумма</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${operationsDetailHtml}</tbody>
+                            </table>
+                            <p style="margin: 0; font-size: 11px; text-align: right; color: #666;">Итого операции: ${productOperationCost.toFixed(2)} ₽</p>
+                        ` : '<p style="margin: 4px 0; font-size: 12px; color: #999;">Операции не указаны</p>'}
+                    </div>
+                `;
+            });
+        }
+            
+        // Формируем сводную таблицу материалов (агрегированную по всем продуктам)
+        const materialMap = new Map();
+        if (order.items) {
+            order.items.forEach(item => {
+                if (item.materials) {
+                    item.materials.forEach(mat => {
+                        const matId = mat.material_id;
+                        if (!materialMap.has(matId)) {
+                            materialMap.set(matId, {
+                                material_id: mat.material_id,
+                                material_name: mat.material_name,
+                                material_code: mat.material_code,
+                                total_quantity: 0,
+                                material_price: mat.material_price,
+                                total_price: 0
+                            });
+                        }
+                        const existing = materialMap.get(matId);
+                        existing.total_quantity += mat.total_quantity || 0;
+                        existing.total_price += mat.total_price || 0;
+                    });
+                }
+            });
+        }
+            
+        let materialsHtml = '';
+        let matNum = 0;
+        materialMap.forEach((mat) => {
+            matNum++;
+            materialsHtml += `
+                <tr>
+                    <td>${matNum}</td>
+                    <td>${mat.material_name}</td>
+                    <td>${mat.material_code}</td>
+                    <td style="text-align: center;">${mat.total_quantity.toFixed(3)}</td>
+                    <td style="text-align: center;">шт</td>
+                    <td style="text-align: right;">${mat.material_price} ₽</td>
+                    <td style="text-align: right;">${mat.total_price.toFixed(2)} ₽</td>
+                </tr>
+            `;
+        });
+            
+        // Формируем сводную таблицу операций (агрегированную по всем продуктам)
+        const operationMap = new Map();
+        if (order.items) {
+            order.items.forEach(item => {
+                if (item.operations) {
+                    item.operations.forEach(op => {
+                        const opId = op.operation_id;
+                        if (!operationMap.has(opId)) {
+                            operationMap.set(opId, {
+                                operation_id: op.operation_id,
+                                operation_name: op.operation_name,
+                                operation_code: op.operation_code,
+                                total_time: 0,
+                                operation_price: op.operation_price,
+                                total_price: 0
+                            });
+                        }
+                        const existing = operationMap.get(opId);
+                        existing.total_time += op.total_time || 0;
+                        existing.total_price += op.total_price || 0;
+                    });
+                }
+            });
+        }
+            
+        let operationsHtml = '';
+        let opNum = 0;
+        operationMap.forEach((op) => {
+            opNum++;
+            operationsHtml += `
+                <tr>
+                    <td>${opNum}</td>
+                    <td>${op.operation_name}</td>
+                    <td>${op.operation_code}</td>
+                    <td style="text-align: center;">${op.total_time.toFixed(2)}</td>
+                    <td style="text-align: center;">ч</td>
+                    <td style="text-align: right;">${op.operation_price} ₽/ч</td>
+                    <td style="text-align: right;">${op.total_price.toFixed(2)} ₽</td>
+                </tr>
+            `;
+        });
+            
+        const statusClass = order.status === 'Новый' ? 'status-new' : 
+                           order.status === 'В работе' ? 'status-progress' : 
+                           order.status === 'Завершён' ? 'status-done' : 'status-cancelled';
+            
+        const modalBody = document.querySelector('#orderModal .modal-body');
+        const viewModalFooter = document.getElementById('viewModalFooter');
+            
+        if (!modalBody) {
+            console.error('Modal body not found!');
+            showNotification('error', 'Ошибка', 'Не удалось найти элемент модального окна');
+            return;
+        }
+            
+        // Устанавливаем контент
+        modalBody.innerHTML = `
+            <!-- Общая информация -->
+            <h4 style="margin: 0 0 12px 0; color: var(--color-primary); border-bottom: 2px solid var(--color-primary); padding-bottom: 8px;">Общая информация</h4>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px;">
+                <p style="margin: 4px 0;"><strong>Номер:</strong> ${order.order_number}</p>
+                <p style="margin: 4px 0;"><strong>Дата:</strong> ${order.order_date ? new Date(order.order_date).toLocaleDateString('ru-RU') : '—'}</p>
+                <p style="margin: 4px 0;"><strong>Подразделение:</strong> ${order.subdivision || '—'}</p>
+                <p style="margin: 4px 0;"><strong>Клиент:</strong> ${order.client_id ? order.client_id.substring(0, 8) + '...' : '—'}</p>
+                <p style="margin: 4px 0;"><strong>Статус:</strong> <span class="status-badge ${statusClass}">${order.status}</span></p>
+            </div>
+                
+            <!-- Продукция -->
+            <h4 style="margin: 16px 0 8px 0; color: var(--color-primary); border-bottom: 1px solid var(--color-border); padding-bottom: 6px;">Продукция</h4>
+            <table style="width: 100%; margin-bottom: 16px; font-size: 13px;">
+                <thead>
+                    <tr style="background: var(--color-primary-light);">
+                        <th style="padding: 6px; text-align: left;">№</th>
+                        <th style="padding: 6px; text-align: left;">Наименование</th>
+                        <th style="padding: 6px; text-align: left;">Код</th>
+                        <th style="padding: 6px; text-align: center;">Кол-во</th>
+                        <th style="padding: 6px; text-align: center;">Ед.</th>
+                    </tr>
+                </thead>
+                <tbody>${productsHtml}</tbody>
+            </table>
+                
+            <!-- Детализация по продукции -->
+            <h4 style="margin: 16px 0 8px 0; color: var(--color-primary); border-bottom: 1px solid var(--color-border); padding-bottom: 6px;">Детализация по продукции</h4>
+            ${productDetailsHtml}
+                
+            <!-- Потребность в материалах (сводная) -->
+            <h4 style="margin: 16px 0 8px 0; color: var(--color-primary); border-bottom: 1px solid var(--color-border); padding-bottom: 6px;">Потребность в материалах</h4>
+            <table style="width: 100%; margin-bottom: 16px; font-size: 13px;">
+                <thead>
+                    <tr style="background: var(--color-primary-light);">
+                        <th style="padding: 6px; text-align: left;">№</th>
+                        <th style="padding: 6px; text-align: left;">Наименование</th>
+                        <th style="padding: 6px; text-align: left;">Код</th>
+                        <th style="padding: 6px; text-align: center;">Кол-во</th>
+                        <th style="padding: 6px; text-align: center;">Ед.</th>
+                        <th style="padding: 6px; text-align: right;">Цена</th>
+                        <th style="padding: 6px; text-align: right;">Сумма</th>
+                    </tr>
+                </thead>
+                <tbody>${materialsHtml}</tbody>
+            </table>
+            <p style="margin: 4px 0; text-align: right;"><strong>Итого материалы:</strong> ${totalMaterialCost.toFixed(2)} ₽</p>
+                
+            <!-- Технологические операции (сводная) -->
+            <h4 style="margin: 16px 0 8px 0; color: var(--color-primary); border-bottom: 1px solid var(--color-border); padding-bottom: 6px;">Технологические операции</h4>
+            <table style="width: 100%; margin-bottom: 16px; font-size: 13px;">
+                <thead>
+                    <tr style="background: var(--color-primary-light);">
+                        <th style="padding: 6px; text-align: left;">№</th>
+                        <th style="padding: 6px; text-align: left;">Наименование</th>
+                        <th style="padding: 6px; text-align: left;">Код</th>
+                        <th style="padding: 6px; text-align: center;">Кол-во</th>
+                        <th style="padding: 6px; text-align: center;">Ед.</th>
+                        <th style="padding: 6px; text-align: right;">Ставка</th>
+                        <th style="padding: 6px; text-align: right;">Сумма</th>
+                    </tr>
+                </thead>
+                <tbody>${operationsHtml}</tbody>
+            </table>
+            <p style="margin: 4px 0; text-align: right;"><strong>Итого операции:</strong> ${totalOperationCost.toFixed(2)} ₽</p>
+                
+            <!-- Итоговая себестоимость -->
+            <div style="margin-top: 20px; padding: 16px; background: var(--color-primary-light); border-radius: var(--radius-sm);">
+                <p style="margin: 4px 0;"><strong>Общая себестоимость:</strong> ${(totalMaterialCost + totalOperationCost).toFixed(2)} ₽</p>
+                <p style="margin: 4px 0;"><strong>  Материалы:</strong> ${totalMaterialCost.toFixed(2)} ₽</p>
+                <p style="margin: 4px 0;"><strong>  Операции:</strong> ${totalOperationCost.toFixed(2)} ₽</p>
+            </div>
+        `;
+            
+        // Если нет позиций, показываем сообщение
+        if (!order.items || order.items.length === 0) {
+            modalBody.innerHTML += '<p style="margin-top: 16px; color: #888;"><em>Позиции в заказе отсутствуют</em></p>';
+        }
+            
+        const modalTitle = document.getElementById('modalTitle');
+        const orderForm = document.getElementById('orderForm');
+        const modalFooter = document.querySelector('#orderModal .modal-footer');
+            
+        if (!modalTitle) {
+            console.error('Modal title not found!');
+            showNotification('error', 'Ошибка', 'Не удалось найти заголовок модального окна');
+            return;
+        }
+            
+        // Обновим заголовок и футер
+        modalTitle.textContent = 'Информация о заказе';
+        
+        // Скрываем форму и показываем footer для просмотра
+        if (orderForm) {
+            orderForm.style.display = 'none';
+        }
+        if (viewModalFooter) {
+            viewModalFooter.style.display = 'flex';
+        }
+        
+        // Откроем модальное окно после обновления содержимого
+        openModal('orderModal');
+            
+    } catch (error) {
+        console.error('View order error:', error);
+        showNotification('error', 'Ошибка', 'Не удалось загрузить заказ: ' + error.message);
+    } finally {
+        isViewingOrder = false;
+    }
+}
+
+async function editOrder(orderId) {
+    try {
+        const response = await fetch(`/api/production-orders/${orderId}`, { credentials: 'include' });
+        const data = await response.json();
+        const order = data;
+
+        document.getElementById('modalTitle').textContent = 'Редактировать заказ';
+        document.getElementById('editOrderId').value = order.order_id;
+        document.getElementById('orderNumber').value = order.order_number;
+        document.getElementById('orderDate').value = order.order_date ? order.order_date.substring(0, 10) : '';
+        document.getElementById('subdivision').value = order.subdivision || '';
+        document.getElementById('clientId').value = order.client_id || '';
+        document.getElementById('status').value = order.status;
+
+        openModal('orderModal');
+    } catch (error) {
+        showNotification('error', 'Ошибка', 'Не удалось загрузить заказ');
+    }
+}
+
+async function deleteOrder(orderId) {
+    if (!confirm('Вы уверены, что хотите удалить этот заказ?')) return;
+        
+    try {
+        const response = await fetch(`/api/production-orders/${orderId}`, {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || 'Error');
+        showNotification('success', 'Успех', result.message || 'Заказ удалён');
+        loadOrders();
+    } catch (error) {
+        showNotification('error', 'Ошибка', error.message);
+    }
+}
+
+function resetOrderModal() {
+    isViewingOrder = false;
+    const orderForm = document.getElementById('orderForm');
+    const viewModalFooter = document.getElementById('viewModalFooter');
+    
+    // Показываем форму и скрываем footer для просмотра
+    if (orderForm) {
+        orderForm.style.display = 'block';
+        orderForm.reset();
+        document.getElementById('orderDate').valueAsDate = new Date();
+        document.getElementById('editOrderId').value = '';
+        document.getElementById('status').value = 'Новый';
+        document.getElementById('orderItemsContainer').innerHTML = '';
+        addOrderItemRow();
+    }
+    if (viewModalFooter) {
+        viewModalFooter.style.display = 'none';
+    }
+}
+
+async function saveOrder(event) {
+    if (event) event.preventDefault();
+    const editId = document.getElementById('editOrderId').value;
+    const data = {
+        order_date: document.getElementById('orderDate').value,
+        subdivision: document.getElementById('subdivision').value,
+        client_id: document.getElementById('clientId').value || null,
+        status: document.getElementById('status').value,
+        items: []
+    };
+
+    // Собираем продукты из формы
+    const itemRows = document.querySelectorAll('.order-item-row');
+    itemRows.forEach(row => {
+        const select = row.querySelector('select');
+        const qty = row.querySelector('input[type="number"]');
+        if (select && select.value) {
+            data.items.push({
+                product_id: select.value,
+                quantity: parseFloat(qty?.value) || 1
+            });
+        }
+    });
+
+    try {
+        const url = editId ? `/api/production-orders/${editId}` : '/api/production-orders/';
+        const method = editId ? 'PUT' : 'POST';
+            
+        const response = await fetch(url, {
+            method: method,
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || 'Error');
+        showNotification('success', 'Успех', result.message || 'Заказ сохранён');
+        closeModal('orderModal');
+        loadOrders();
+    } catch (error) {
+        showNotification('error', 'Ошибка', error.message);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadOrders();
+    loadProducts();
+    loadClients();
+});
+</script>
+
+<style>
+.status-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.status-new {
+    background: #dbeafe;
+    color: #1e40af;
+}
+.status-progress {
+    background: #fef3c7;
+    color: #92400e;
+}
+.status-done {
+    background: #d1fae5;
+    color: #065f46;
+}
+.status-cancelled {
+    background: #fee2e2;
+    color: #991b1b;
+}
+.modal-body {
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: 16px;
+}
+.modal-body table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12px;
+}
+.modal-body table th,
+.modal-body table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #e5e7eb;
+    font-size: 13px;
+}
+.modal-body table th {
+    background: #f3f4f6;
+    font-weight: 600;
+}
+</style>
+
+<div class="data-table">
+<div class="table-header">
+    <div class="table-title">Список заказов на производство</div>
+    <div class="table-actions">
+        <button class="btn btn-primary" onclick="openAddOrderModal()">+ Добавить заказ</button>
+    </div>
+</div>
+<table>
+    <thead>
+        <tr>
+            <th>№ заказа</th>
+            <th>Дата</th>
+            <th>Подразделение</th>
+            <th>Клиент ID</th>
+            <th>Сумма</th>
+            <th>Статус</th>
+            <th>Действия</th>
+        </tr>
+    </thead>
+    <tbody id="ordersTableBody">
+        <tr><td colspan="7" class="loading-spinner">Загрузка...</td></tr>
+    </tbody>
+</table>
+</div>
+
+<div id="orderModal" class="modal-overlay" style="display:none;">
+<div class="modal" style="max-width: 1200px; width: 95%; max-height: 90vh; overflow-y: auto;">
+    <div class="modal-header">
+        <h3 id="modalTitle" class="modal-title">Добавить заказ</h3>
+        <button class="modal-close" onclick="closeModal('orderModal')">&times;</button>
+    </div>
+    <div class="modal-body">
+        <!-- Контент будет добавляться динамически -->
+    </div>
+    <form id="orderForm" onsubmit="saveOrder(event)">
+        <input type="hidden" id="editOrderId" value="">
+        <div class="modal-body" style="display:none;">
+            <div class="form-group">
+            <div class="form-group">
+                <label class="form-label">Дата заказа <span class="required">*</span></label>
+                <input type="date" id="orderDate" class="form-input" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Подразделение</label>
+                <input type="text" id="subdivision" class="form-input" placeholder="Например: Основное подразделение">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Клиент ID</label>
+                <input type="text" id="clientId" class="form-input">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Статус</label>
+                <select id="status" class="form-input">
+                    <option value="Новый">Новый</option>
+                    <option value="В работе">В работе</option>
+                    <option value="Завершён">Завершён</option>
+                    <option value="Отменён">Отменён</option>
+                </select>
+            </div>
+                
+            <div class="form-group" style="margin-top: 16px;">
+                <label class="form-label">Продукция в заказе</label>
+                <div id="orderItemsContainer"></div>
+                <button type="button" class="btn btn-sm btn-outline" onclick="addOrderItemRow()" style="margin-top: 8px;">+ Добавить позицию</button>
+            </div>
+        </div>
+    </form>
+    <div class="modal-footer" style="display:none;" id="viewModalFooter">
+        <button class="btn btn-primary" onclick="closeModal('orderModal'); resetOrderModal();">Закрыть</button>
+    </div>
+</div>
+</div>
+{% endblock %}

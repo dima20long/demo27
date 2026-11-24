@@ -1,0 +1,8 @@
+STYLE REVIEW — Demo27
+- Python files: 67
+- py_compile: 67/67 compiled successfully
+- trailing whitespace: 84 lines (scripted scan)
+- lines > 88 chars: 112 (scripted scan)
+- flake8/pylint: not installed in review runtime, not run
+- Confirmed: duplicate request.get_json() in app/blueprints/auth.py register()
+- Architecture note: both app/blueprints and app/views contain API implementations; app factory registers app/views.
