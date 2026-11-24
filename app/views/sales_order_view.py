@@ -84,8 +84,6 @@ class SalesOrderListAPI(BaseAPIView):
                 quantity = float(item_data.get("quantity", 1))
                 unit_price = float(item_data.get("unit_price", 0))
                 discount = float(item_data.get("discount", 0))
-                if not 0 <= discount <= 100:
-                    return self._error_response("Скидка должна быть от 0 до 100")
                 
                 item = SalesOrderItem(
                     sales_order=new_order, product_id=product_uuid,
@@ -334,8 +332,6 @@ class SalesOrderDetailAPI(BaseAPIView):
                 quantity = float(item_data.get("quantity", 1))
                 unit_price = float(item_data.get("unit_price", 0))
                 discount = float(item_data.get("discount", 0))
-                if not 0 <= discount <= 100:
-                    return self._error_response("Скидка должна быть от 0 до 100")
                 
                 item = SalesOrderItem(
                     sales_order=order, product_id=product_uuid,
