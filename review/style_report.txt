@@ -1,8 +1,40 @@
-STYLE REVIEW — Demo27
-- Python files: 67
-- py_compile: 67/67 compiled successfully
-- trailing whitespace: 84 lines (scripted scan)
-- lines > 88 chars: 112 (scripted scan)
-- flake8/pylint: not installed in review runtime, not run
-- Confirmed: duplicate request.get_json() in app/blueprints/auth.py register()
-- Architecture note: both app/blueprints and app/views contain API implementations; app factory registers app/views.
+ОТЧЁТ РЕВЬЮ СТИЛЯ КОДА — DEMO27
+
+Дата проверки: 23.11.2026
+Инструмент: Flake8 7.5.0
+Python: 3.11.9
+
+Команда:
+python -m flake8 app tests run.py
+
+РЕЗУЛЬТАТЫ:
+
+1. E501 — длинные строки
+Обнаружено множество строк длиной более 79 символов.
+Замечания присутствуют в app, blueprints, services, views, models и DTO.
+
+2. W293 — пробелы в пустых строках
+Обнаружены пробелы в пустых строках в ряде файлов services и views.
+
+3. E303 — слишком много пустых строк
+Обнаружено в material_view.py и operation_view.py.
+
+4. F401 — неиспользуемые импорты
+Обнаружены неиспользуемые импорты моделей и sqlalchemy.text.
+
+5. W291 — пробелы в конце строк
+Обнаружен trailing whitespace в sales_order_view.py.
+
+ЗАКЛЮЧЕНИЕ:
+
+Статическая проверка выявила многочисленные замечания по форматированию и читаемости кода, а также неиспользуемые импорты.
+
+РЕКОМЕНДАЦИИ:
+
+- Сократить длину строк.
+- Удалить пробелы из пустых строк.
+- Устранить избыточные пустые строки.
+- Проверить и удалить ненужные импорты.
+- Повторить проверку после исправлений.
+
+Исходный код в ходе данной проверки не изменялся.
